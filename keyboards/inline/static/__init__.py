@@ -1,0 +1,1 @@
+from .user_inline_static import *
