@@ -1,14 +1,15 @@
+import asyncio
 import decimal
-
+import logging
+import time
 from aiogram.dispatcher import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-
 import states
 from data import *
 from service import *
 from database import *
 # from aiogram.types import InputFile
-from main import bot, dp
+from main import bot, dp, payok
 import keyboards
 from aiogram import types
 
@@ -41,10 +42,12 @@ async def start_command(message: types.Message, state: FSMContext):
                     new_user.save()
                     await message.answer(text=f"Получено приглашение от пользователя "
                                               f"{User.select().where(User.tg_id == referrer).get().tg_nickname}")
+                    logging.info(f"Новый пользователь: {message.from_user.username}. "
+                                 f"Пригласивший: {User.select().where(User.tg_id == referrer).get().tg_nickname}")
 
             except ValueError:
                 # Указана некорректная информация реферала, бонусы никому не начисляются
-                pass
+                logging.info(f"Новый пользователь: {message.from_user.username}")
     except IntegrityError as e:
         pass
 
@@ -79,7 +82,7 @@ async def purchase(call: types.CallbackQuery, state: FSMContext):
             data['product'] = product
 
         msg_kb_rm = await bot.send_message(chat_id=call.message.chat.id,
-                                           text="aboba",
+                                           text="Загрузка...",
                                            reply_markup=keyboards.ReplyKeyboardRemove())
         await bot.delete_message(call.message.chat.id, msg_kb_rm.message_id)
 
@@ -138,7 +141,7 @@ async def purchase(call: types.CallbackQuery, state: FSMContext):
 
                     user.balance = user.balance - decimal.Decimal(data['price'])
                     user.save()
-                    Order.create(user=user.tg_id,
+                    new_order = Order.create(user=user.tg_id,
                                  sim5_id=order_data['id'],
                                  service=order_data['product'],
                                  country=order_data['country'],
@@ -149,8 +152,11 @@ async def purchase(call: types.CallbackQuery, state: FSMContext):
 
                     await states.StateWorker.order_confirmation.set()
                     await call.message.edit_caption(caption=f"Покупка совершена. Ваш номер: `{order_data['phone']}`",
-                                                    reply_markup=await keyboards.get_order_kb(order_id=order_data['id']),
+                                                    reply_markup=await keyboards.get_order_kb(
+                                                        order_id=order_data['id']),
                                                     parse_mode="markdown")
+                    logging.info(f"Пользователь {call.from_user.username} совершил покупку номера.\n"
+                                 f"ID Заказа в базе: {new_order.id}\nID Заказа в 5sim: {new_order.sim5_id}")
                     return
             else:
                 await call.message.edit_caption(caption="Недостаточно средств")
@@ -181,10 +187,13 @@ async def order_confirmation(call: types.CallbackQuery, state: FSMContext):
             if order_data == 'order has sms':
                 await call.message.edit_caption(caption=f"Возникла ошибка отмене заказа: номер получил СМС",
                                                 reply_markup=await keyboards.get_order_kb(order_id=order_id))
+                logging.info(f"Пользователь {call.from_user.username} получил СМС на заказ с ID {order_id}")
                 return
             else:
                 await call.message.edit_caption(caption=f"Возникла ошибка при отмене заказа: {order_data}",
                                                 reply_markup=await keyboards.get_order_kb(order_id=order_id))
+                logging.info(f"Пользователь {call.from_user.username} получил ошибку при отмене заказа с ID {order_id}: "
+                             f"{order_data}")
                 return
         else:
             db_order = Order.select(Order.id, Order.sim5_id, Order.status).where(Order.sim5_id == order_id).get()
@@ -200,6 +209,7 @@ async def order_confirmation(call: types.CallbackQuery, state: FSMContext):
             await states.StateWorker.buy.set()
             await call.message.edit_caption(caption=f"Заказ успешно отменён",
                                             reply_markup=await keyboards.get_services_kb(service_pages[0]))
+            logging.info(f"Пользователь {call.from_user.username} отменил заказ с ID {db_order.id}")
 
     elif 'finish_order' in call.data:
         order_id = call.data.split(" ")[1]
@@ -214,6 +224,8 @@ async def order_confirmation(call: types.CallbackQuery, state: FSMContext):
             else:
                 await call.message.edit_caption(caption=f"Возникла ошибка при закрытии заказа: {order_data}",
                                                 reply_markup=await keyboards.get_order_kb(order_id=order_id))
+                logging.info(f"Пользователь {call.from_user.username} получил ошибку при закрытии заказе с ID {order_id}: "
+                             f"{order_data}")
                 return
         else:
             db_order = Order.select(Order.id, Order.sim5_id, Order.status).where(Order.sim5_id == order_id).get()
@@ -223,44 +235,104 @@ async def order_confirmation(call: types.CallbackQuery, state: FSMContext):
             await states.StateWorker.buy.set()
             await call.message.edit_caption(caption=f"Заказ успешно закрыт",
                                             reply_markup=await keyboards.get_services_kb(service_pages[0]))
+            logging.info(f"Пользователь {call.from_user.username} успешно завершил заказ с ID {db_order.id}")
 
 
 @dp.callback_query_handler(state=states.StateWorker.balance_method)
 async def payment_method(call: types.CallbackQuery, state: FSMContext):
+    async with state.proxy() as data:
+        data['method'] = call.data
     if call.data == 'cryptobot':
-        await state.finish()
         await states.StateWorker.balance_currency.set()
-        await call.message.edit_text("Выберите валюту", reply_markup=keyboards.currencies)
+        await call.message.edit_text("Выберите валюту", reply_markup=await keyboards.get_cryptobot_currencies())
+    if call.data == 'payok':
+        await states.StateWorker.balance_currency.set()
+        await call.message.edit_text("Выберите валюту", reply_markup=await keyboards.get_payok_currencies())
 
 
 @dp.callback_query_handler(state=states.StateWorker.balance_currency)
-async def cryptobot_currency(call: types.CallbackQuery, state: FSMContext):
+async def currency_choise(call: types.CallbackQuery, state: FSMContext):
     async with state.proxy() as data:
         data['currency'] = call.data.upper()
     await states.StateWorker.balance_commit.set()
-    await call.message.edit_text(text=f"Выбрана валюта {call.data.upper()}\n\nВведите сумму в рублях для оплаты",
-                                 reply_markup=InlineKeyboardMarkup().add(keyboards.cancel))
+    if data['method'] == 'payok':
+        await call.message.edit_text(
+            text=f"Введите сумму в {data['currency']} для оплаты (минимальная - {minimal_amount[data['currency']]} {data['currency']})",
+            reply_markup=InlineKeyboardMarkup().add(keyboards.cancel))
+    else:
+        await call.message.edit_text(text=f"Выбрана валюта {data['currency']}\n\nВведите сумму в рублях для оплаты (минимальная - 10 RUB)",
+                                     reply_markup=InlineKeyboardMarkup().add(keyboards.cancel))
 
 
 @dp.message_handler(state=states.StateWorker.balance_commit)
 async def balance_commit(message: types.Message, state: FSMContext):
-    if message.text.isdigit():
+    try:
         amount = float(message.text)
-        if amount < 5:
-            await message.answer("Минимальная сумма перевода 5 RUB. Повторите попытку")
-        else:
-            async with state.proxy() as data:
+        async with state.proxy() as data:
+            if amount < minimal_amount[data['currency']]:
+                await message.answer(f"Минимальная сумма перевода {minimal_amount[data['currency']]} {data['currency']}. Повторите попытку")
+            else:
                 data['sum'] = amount
-                invoice = await cryptobot_create_invoice(currency=data['currency'], sum=data['sum'])
-                pay_btn = InlineKeyboardButton(text="Оплатить",
-                                               url=invoice.pay_url)
-                check_btn = InlineKeyboardButton(text="Проверить оплату",
-                                                 callback_data=f"check_invoice {invoice.invoice_id}")
-                await message.answer(text=f"К оплате {invoice.amount} {data['currency']}",
-                                     reply_markup=InlineKeyboardMarkup(row_width=1).add(pay_btn, check_btn))
 
-    else:
-        await message.answer("Сумма перевода должна быть положительным числовым значением. Повторите ввод")
+                if data['method'] == 'cryptobot':
+                    invoice = await cryptobot_create_invoice(currency=data['currency'], sum=data['sum'])
+                    logging.info(f"Создана выплата Cryptobot для {message.from_user.username}\n Сумма: {data['sum']} {data['currency']}")
+                    pay_btn = InlineKeyboardButton(text="Оплатить",
+                                                   url=invoice.pay_url)
+                    check_btn = InlineKeyboardButton(text="Проверить оплату",
+                                                     callback_data=f"check_invoice {invoice.invoice_id}")
+                    await message.answer(text=f"К оплате {invoice.amount} {data['currency']}\n\nПосле оплаты ОБЯЗАТЕЛЬНО нажмите кнопку 'Проверить оплату', иначе баланс может не пополниться",
+                                         reply_markup=InlineKeyboardMarkup(row_width=1).add(pay_btn, check_btn))
+                elif data['method'] == 'payok':
+                    payment_id = f"{int(time.time())}"
+                    logging.info(f"Создана выплата PAYOK для {message.from_user.username}\n payment_id:{payment_id}, Сумма: {data['sum']} {data['currency']}")
+                    payment = await payok.create_pay(amount=data['sum'],
+                                                     currency=data['currency'],
+                                                     success_url=PAYOK_RETURN_URL,
+                                                     desc="Пополнение баланса Mellstroy SMS",
+                                                     payment=payment_id)
+
+                    msg = await message.answer(text=f"К оплате {data['sum']} {data['currency']}.\nСсылка активна 1 час.",
+                                               reply_markup=await keyboards.get_payok_pay_btn(payment))
+                    await state.finish()
+
+                    c = 0
+                    while True:
+                        transaction_status = await check_payok_payment(payment_id)
+                        if c >= 3600:
+                            await msg.edit_text(text="Ссылка на оплату просрочена. Попробуйте снова")
+                            logging.info(f"Ссылка на оплату Payok пользователя {msg.from_user.username} просрочена.")
+                            break
+                        if transaction_status == 1:
+                            user = User \
+                                .select(User.tg_id, User.tg_nickname, User.balance, User.referrer) \
+                                .where(User.tg_nickname == message.from_user.username) \
+                                .get()
+                            user.balance = user.balance + decimal.Decimal(data['sum'])
+                            user.save()
+                            if user.referrer:
+                                referrer = User \
+                                    .select(User.tg_id, User.tg_nickname, User.balance, User.referrer) \
+                                    .where(User.tg_id == user.referrer) \
+                                    .get()
+                                referrer.balance = referrer.balance + decimal.Decimal(data['sum'] * 0.05)
+                                referrer.save()
+                            await msg.edit_text(text=f"Успешно зачислено {data['sum']} RUB")
+                            logging.info(f"Payok: Оплата произведена {message.from_user.username}\n payment_id:{payment_id}, Сумма: {data['sum']} {data['currency']}")
+                            break
+                        else:
+                            await asyncio.sleep(65)
+                            c += 65
+                            logging.info(f"Ожидание пополнения от {message.from_user.username}")
+    except ValueError:
+        await reply_handler(message=message, state=state)
+
+
+@dp.callback_query_handler(state=states.StateWorker.balance_commit)
+async def cancel(call: types.CallbackQuery, state: FSMContext):
+    if 'cancel' in call.data:
+        await state.finish()
+        await call.message.edit_text(text="Операция отменена")
 
 
 @dp.callback_query_handler(state=states.StateWorker.balance_commit)
@@ -277,7 +349,6 @@ async def check_cb_invoice(call: types.CallbackQuery, state: FSMContext):
                 user.save()
 
                 if user.referrer:
-                    print("Есть реферал")
                     referrer = User \
                         .select(User.tg_id, User.tg_nickname, User.balance, User.referrer) \
                         .where(User.tg_id == user.referrer) \
@@ -287,6 +358,8 @@ async def check_cb_invoice(call: types.CallbackQuery, state: FSMContext):
                     referrer.save()
 
                 await call.message.edit_text(text=f"Успешно зачислено {data['sum']} RUB")
+                logging.info(f"Cryptobot: Оплата произведена {call.from_user.username}\n Сумма: {data['sum']} {data['currency']}")
+
             await state.finish()
         else:
             await call.answer(text="Вы не оплатили счёт!",
@@ -340,6 +413,7 @@ async def transfer_commit(message: types.Message, state: FSMContext):
                                      reply_markup=keyboards.main_reply_menu)
                 await bot.send_message(chat_id=reciever.tg_id,
                                        text=f"Вам поступил перевод {transfer_sum} RUB от пользователя {sender.tg_nickname}")
+                logging.info(f"Произведён перевод от {message.from_user.username} к {reciever.tg_nickname} на сумму {transfer_sum} RUB")
                 await state.finish()
         else:
             await message.answer("Недостаточно средств", reply_markup=keyboards.main_reply_menu)
@@ -397,7 +471,10 @@ async def reply_handler(message: types.Message, state: FSMContext):
                              reply_markup=keyboards.account_inline_menu)
 
     elif 'Инфо' in message.text:
-        await message.answer(text="❗️Выберите действие:", reply_markup=keyboards.info_inline_menu)
+        await bot.send_photo(chat_id=message.chat.id,
+                             photo="AgACAgIAAxkDAAIG2GUDBmEz1dCo0OUeFCwXB2q_cHigAAJJzzEbwm8ZSF1Z0HelM_TEAQADAgADcwADMAQ",
+                             caption="❗️Выберите действие:",
+                             reply_markup=keyboards.info_inline_menu)
 
 
 # Меню профиль/инфо

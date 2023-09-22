@@ -1,6 +1,8 @@
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardRemove
 
 # Покупка
+from data.config import ADMIN_USERNAME
+
 buy = InlineKeyboardButton(text="Купить", callback_data='buy')
 cancel = InlineKeyboardButton(text="Отмена", callback_data='cancel')
 
@@ -15,7 +17,7 @@ history = InlineKeyboardButton(text="🛒 История покупок", callba
 account_inline_menu = InlineKeyboardMarkup(row_width=1).add(balance_, referal, transfer, history)
 
 # Инфо
-admin = InlineKeyboardButton(text="⚙️Админ", callback_data='admin', url='https://t.me/eitins')
+admin = InlineKeyboardButton(text="⚙️Админ", callback_data='admin', url=f'https://t.me/{ADMIN_USERNAME}')
 tech_support = InlineKeyboardButton(text="🆘Тех. поддержка", callback_data='support')
 manual = InlineKeyboardButton(text="📖Инструкция", callback_data='manual')
 rules = InlineKeyboardButton(text="📜Правила", callback_data='rules')
@@ -24,8 +26,9 @@ info_inline_menu = InlineKeyboardMarkup(row_width=2).add(admin, tech_support, ma
 
 # Оплата
 cryptobot = InlineKeyboardButton(text="Cryptobot", callback_data='cryptobot')
+payok = InlineKeyboardButton('Payok', callback_data='payok')
 
-pay_options_menu = InlineKeyboardMarkup(row_width=1).add(cryptobot)
+pay_options_menu = InlineKeyboardMarkup(row_width=1).add(payok, cryptobot)
 # способы
 
 btc = InlineKeyboardButton(text="BTC", callback_data='btc')

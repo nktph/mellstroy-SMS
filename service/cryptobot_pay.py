@@ -3,7 +3,7 @@ from data.config import CRYPTO_PAY_TOKEN
 
 
 async def cryptobot_create_invoice(currency: str, sum: float):
-    crypto = AioCryptoPay(token=CRYPTO_PAY_TOKEN, network=Networks.TEST_NET)
+    crypto = AioCryptoPay(token=CRYPTO_PAY_TOKEN, network=Networks.MAIN_NET)
     rates = await crypto.get_exchange_rates()
     for rate in rates:
         if rate.source == currency and rate.target == 'RUB':

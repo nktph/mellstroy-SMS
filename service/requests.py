@@ -43,7 +43,7 @@ async def get_prices(country: str, product: str):
                     if resp[f"{country}"][f"{product}"][f"{operator}"]['count'] > 0:
                         operator_data = {
                                          'name': f'{operator}',
-                                         'cost': resp[f"{country}"][f"{product}"][f"{operator}"]["cost"],
+                                         'cost': round(float(resp[f"{country}"][f"{product}"][f"{operator}"]["cost"])*1.8, 2),
                                          'count': resp[f"{country}"][f"{product}"][f"{operator}"]["count"]
                                          }
                         operators.append(operator_data)
